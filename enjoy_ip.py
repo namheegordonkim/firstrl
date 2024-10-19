@@ -26,11 +26,11 @@ class VisualArray:
 
 class AppState:
     def __init__(
-        self,
-        scene_visuals: VisualArray,
-        trail_visuals: VisualArray,
-        guide_visuals: VisualArray,
-        learner: ReinforceLearner,
+            self,
+            scene_visuals: VisualArray,
+            trail_visuals: VisualArray,
+            guide_visuals: VisualArray,
+            learner: ReinforceLearner,
     ):
         self.show_axes = False
         self.pose_idx = 0
@@ -43,7 +43,7 @@ class AppState:
         self.guide_actors = guide_visuals.actors
 
         self.optimizer = learner
-        self.env_container = learner.env_container
+        self.train_env_container = learner.train_env_container
         self.rollouter = learner.rollouter
 
         self.trajectory = None
@@ -60,7 +60,7 @@ class AppState:
         self.stepping = False
         self.step_i = 0
         self.n_steps = 10
-        self.n_epochs = 10
+        self.n_epochs = 1
 
         self.rollout_length = 64
 
@@ -127,6 +127,12 @@ def setup_and_run_gui(pl: ImguiPlotter, app_state: AppState):
             print("Learning")
             app_state.optimizer.learn(app_state.n_epochs)
 
+        imgui.same_line()
+        clicked = imgui.button("Test")
+        if clicked:
+            print("Testing")
+            app_state.optimizer.test()
+
         changed, app_state.n_epochs = imgui.slider_int("# Epochs", app_state.n_epochs, 1, 100)
         changed, app_state.n_steps = imgui.slider_int("# Steps", app_state.n_steps, 1, 100)
         clicked = imgui.button("Step")
@@ -160,23 +166,26 @@ def setup_and_run_gui(pl: ImguiPlotter, app_state: AppState):
 
         # Stepping
         if app_state.stepping:
+            # app_state.optimizer.reset()
             app_state.optimizer.sample(app_state.rollout_length, app_state.deterministic)
             app_state.optimizer.evaluate()
             app_state.optimizer.weigh()
             app_state.optimizer.learn(app_state.n_epochs)
+            app_state.optimizer.test()
 
         if app_state.play_mode:
             transition = app_state.rollouter.rollout(
-                app_state.env_container.env_state,
+                app_state.train_env_container.env_state,
+                app_state.train_env_container,
                 app_state.optimizer.policy,
                 1,
                 app_state.deterministic,
             )
-            app_state.env_container.env_state, _ = jax.tree.map(lambda x: x[:, -1], transition)
+            app_state.train_env_container.env_state, _ = jax.tree.map(lambda x: x[:, -1], transition)
             # Animating
             for i in range(len(app_state.scene_actors)):
-                pos = np.array(app_state.env_container.env_state.pipeline_state.x.pos[0, i])
-                quat = np.array(app_state.env_container.env_state.pipeline_state.x.rot[0, i])
+                pos = np.array(app_state.train_env_container.env_state.pipeline_state.x.pos[0, i])
+                quat = np.array(app_state.train_env_container.env_state.pipeline_state.x.rot[0, i])
                 quat[..., [0, 1, 2, 3]] = quat[..., [1, 2, 3, 0]]
 
                 m = np.eye(4)
@@ -186,7 +195,7 @@ def setup_and_run_gui(pl: ImguiPlotter, app_state: AppState):
 
         else:
             # Guide and trails
-            for i in range(app_state.env_container.batch_size):
+            for i in range(app_state.train_env_container.batch_size):
                 for j in range(2):
                     if app_state.show_trails and app_state.optimizer.tau is not None:
                         if app_state.stepping or sample_clicked:
@@ -206,8 +215,8 @@ def setup_and_run_gui(pl: ImguiPlotter, app_state: AppState):
 
             # Animating
             for i in range(len(app_state.scene_actors)):
-                pos = np.array(app_state.env_container.env_state.pipeline_state.x.pos[0, i])
-                quat = np.array(app_state.env_container.env_state.pipeline_state.x.rot[0, i])
+                pos = np.array(app_state.train_env_container.env_state.pipeline_state.x.pos[0, i])
+                quat = np.array(app_state.train_env_container.env_state.pipeline_state.x.rot[0, i])
                 quat[..., [0, 1, 2, 3]] = quat[..., [1, 2, 3, 0]]
 
                 m = np.eye(4)
@@ -258,9 +267,22 @@ def main(args):
 
     env_name = "inverted_pendulum"
     backend = "mjx"
-    batch_size = 128
-    env_container = EnvContainer(env_name, backend, batch_size)
-
+    batch_size = 1024
+    episode_length = 256
+    train_env_container = EnvContainer(
+        env_name,
+        backend,
+        batch_size,
+        True,
+        episode_length
+    )
+    eval_env_container = EnvContainer(
+        env_name,
+        backend,
+        batch_size,
+        False,
+        episode_length
+    )
     mjcf_path = "brax/envs/assets/inverted_pendulum.xml"
     visual = XMLVisualDataContainer(mjcf_path)
     n = len(visual.meshes)
@@ -279,17 +301,23 @@ def main(args):
     scene_visuals = VisualArray(scene_meshes, scene_actors)
 
     policy = ProbMLP(
-        input_size=env_container.env.observation_size,
-        output_size=env_container.env.action_size,
+        input_size=train_env_container.env.observation_size,
+        output_size=train_env_container.env.action_size,
         hidden_size=64,
     )
     value = MLP(
-        input_size=env_container.env.observation_size,
+        input_size=train_env_container.env.observation_size,
         output_size=1,
         hidden_size=64,
     )
-    rollouter = PolicyRollouter(env_container)
-    learner = ReinforceLearner(args, env_container, rollouter, policy, value)
+    # policy = ProbMLP(
+    #     input_size=64,
+    #     output_size=train_env_container.env.action_size,
+    #     hidden_size=64,
+    # )
+    # value = nn.Sequential(nn.LeakyReLU(), nn.Linear(64, 1))
+    rollouter = PolicyRollouter()
+    learner = ReinforceLearner(args, train_env_container, eval_env_container, rollouter, policy, value)
 
     trail_meshes = np.empty((batch_size, 2), dtype=object)
     trail_actors = np.empty((batch_size, 2), dtype=object)

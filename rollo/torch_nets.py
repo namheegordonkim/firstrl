@@ -1,6 +1,7 @@
+import numpy as np
 import torch
 from torch import nn
-from torch.distributions import Normal, TransformedDistribution, TanhTransform
+from torch.distributions import Normal, TransformedDistribution, TanhTransform, identity_transform
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -73,35 +74,45 @@ class MLP(nn.Module):
         self.output_size = output_size
         self.hidden_size = hidden_size
 
-        self.layers = nn.Sequential(
+        self.base_layers = nn.Sequential(
             nn.Linear(self.input_size, self.hidden_size),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_size, self.hidden_size),
+        )
+        self.final_layer = nn.Sequential(
             nn.LeakyReLU(),
             nn.Linear(self.hidden_size, self.output_size),
         )
+
+        # for module in self.base_layers:
+        #     if isinstance(module, nn.Linear):
+        #         nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+        #         module.bias.data.fill_(0.0)
+        #
+        # for module in self.final_layer:
+        #     if isinstance(module, nn.Linear):
+        #         nn.init.orthogonal_(module.weight, gain=1.0)
+        #         module.bias.data.fill_(0.0)
+
         self.input_rms = RunningMeanStd(shape=(input_size,))
 
     def forward(self, x: torch.Tensor):
-        x = self.input_rms.normalize(x)
-        y = self.layers.forward(x)
+        # x = self.input_rms.normalize(x)
+        y = self.base_layers.forward(x)
+        y = self.final_layer.forward(y)
         return y
 
 
 class ProbMLP(MLP):
     def __init__(self, input_size: int, output_size: int, hidden_size: int):
         super().__init__(input_size, output_size, hidden_size)
-        del self.layers
+        del self.final_layer
         self.mu = nn.Sequential(
-            nn.Linear(self.input_size, self.hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(self.hidden_size, self.hidden_size),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_size, self.output_size),
+            # nn.Tanh(),
             # ScaleShift(self.output_size, scale=1e-3, shift=0),
         )
         # self.logstd = nn.Sequential(
@@ -112,21 +123,27 @@ class ProbMLP(MLP):
         #     nn.Linear(self.hidden_size, self.hidden_size),
         #     nn.LeakyReLU(),
         #     nn.Linear(self.hidden_size, self.output_size),
-        #     ScaleShift(self.output_size, scale=1, shift=-4),
+        #     ScaleShift(self.output_size, scale=1, shift=-1),
         # )
-        self.logstd = nn.Parameter(torch.ones(self.output_size, dtype=torch.float) * 0, requires_grad=False)
+        self.logstd = nn.Parameter(torch.ones(self.output_size, dtype=torch.float) * -2, requires_grad=True)
+
+        # for module in self.mu:
+        #     if isinstance(module, nn.Linear):
+        #         nn.init.orthogonal_(module.weight, gain=0.01)
+        #         module.bias.data.fill_(0.0)
 
         self.input_rms = RunningMeanStd(shape=(input_size,))
 
     def forward(self, x: torch.Tensor):
-        x = self.input_rms.normalize(x)
-
+        # x = self.input_rms.normalize(x)
+        x = self.base_layers.forward(x)
         mu = self.mu.forward(x)
         # mu = torch.clip(mu, min=-0.999, max=0.999)
         # logstd = torch.clip(self.logstd.forward(x), min=-10, max=1)
-        logstd = self.logstd[None].repeat_interleave(x.shape[0], dim=0)
+        logstd = self.logstd * torch.ones_like(mu)
         dist = Normal(mu, logstd.exp())
-        dist = TransformedDistribution(dist, [TanhTransform()])
+        dist = TransformedDistribution(dist, identity_transform)
+        # dist = TransformedDistribution(dist, [TanhTransform()])
         return dist
 
     def sample(self, x: torch.Tensor, deterministic=False):

@@ -51,13 +51,10 @@ class Rollouter:
 
 
 class PolicyRollouter:
-    def __init__(self, env_container: EnvContainer):
-        self.env_container = env_container
-
-    def rollout(self, state, policy: ProbMLP, max_horizon: int, deterministic: bool, terminate: bool = True):
+    def rollout(self, state, env_container: EnvContainer, policy: ProbMLP, max_horizon: int, deterministic: bool, terminate: bool = True):
         trajectories = [state]
         actions = []
-        s0 = self.env_container.jit_env_reset(rng=jax.random.PRNGKey(0))
+        s0 = env_container.jit_env_reset(rng=jax.random.PRNGKey(0))
         for t in tqdm(range(max_horizon)):
 
             # def handle_terminate(a, b):
@@ -75,10 +72,10 @@ class PolicyRollouter:
                 .numpy()
             )
             actions.append(a)
-            state = self.env_container.jit_env_step(state, jp.array(a))
+            state = env_container.jit_env_step(state, jp.array(a))
             trajectories.append(state)
         trajectory_stacked = tree_stack(trajectories, axis=1)
         # Abusing duck-typing to be compact
         actions_stacked = np.stack(actions, axis=1)
-        self.env_container.env_state = state
+        env_container.env_state = state
         return trajectory_stacked, actions_stacked

@@ -28,6 +28,7 @@ class EnvContainer:
         episode_length: int = 256,
     ):
         self.batch_size = batch_size
+        self.episode_length = episode_length
         self.env = envs.create(
             env_name,
             auto_reset=auto_reset,
